@@ -8,14 +8,14 @@
 /** @global CDatabase $DB */
 /** @global CUser $USER */
 /** @global CMain $APPLICATION */
-use Bitrix\Highloadblock as HL;
 use Bitrix\Main\Loader;
 
 Loader::IncludeModule("iblock");
 Loader::IncludeModule("sale");
+Loader::IncludeModule("highloadblock");
 require_once(dirname(__FILE__) . '/phpQuery.php');
 
-$POST_RIGHT = $APPLICATION->GetGroupRight("main"); //если делаете на основном сайте то права админа что бы были
+$POST_RIGHT = $APPLICATION->GetGroupRight("main");
 if ($POST_RIGHT == "D")
     $APPLICATION->AuthForm("Доступ запрещен");
 
@@ -24,6 +24,7 @@ if ($POST_RIGHT == "D")
  * Processing of received parameters
  *************************************************************************/
 $url = $arParams['URL'];
+
 
 $arTranslit = array("replace_space" => "-", "replace_other" => "-");
 $container = $arParams['CONTAINER'];
@@ -37,15 +38,13 @@ $urlhost = parse_url($url)['host'];
 $num = 20;
 $elementCounter = 0;
 
-$sectionID = 29; //ID аздела для выгрузки товаров
-$pageCount = 3; //колличество страниц 745
+$sectionID = 13; //ID аздела для выгрузки товаров
 $i = 0;
 
-$innerLimit = ($pageCount-$i) * 20; //всего елементов для обсчета страниц
 $bool = 1; // для скрипта
-
 $tmp = array();
 $el = new CIBlockElement;
+$elSect = new CIBlockSection;
 $PROP = array();
 $productNum = 0;
 
@@ -99,12 +98,18 @@ if ($_REQUEST['work_start'] && check_bitrix_sessid()) {
 
     $links = $document->find($container)->find($element);
 
+    $pageCount = $document->find('.no_underline')->get(pq('.no_underline')->length-2);
+    $pageCount = intval($pageCount->textContent);
+
+    if ($i == 0) {
+        $innerLimit = $pageCount * $num; //всего елементов для обсчета страниц
+    }
+
     $elLimit = count($links);
     $elementCounter = $_REQUEST['elementCounter'] += intval(count($links));
 
     if ($i >= $pageCount - 1) //если текущий I равен колличсеству страниц - 1 для скрипта ниже нужно так, так как он работает на перед
         $innerLimit = $elLimit;
-
 
     foreach ($links as $key => $link) {
 
@@ -133,18 +138,36 @@ if ($_REQUEST['work_start'] && check_bitrix_sessid()) {
 
         $docDetails = file_get_contents($detailUrl); //получаем страницу
         $docDetail = phpQuery::newDocument($docDetails);
-        $linksDetail = $docDetail->find('.container');
-        $brandsDetail = $linksDetail->find('.brands')->text();
+        $linksDetail = $docDetail->find('.qwes2');
+        $brandsDetail = $linksDetail->find('.pqwes3')->text();
         $detail = pq('.product_block');
-        $detailText = $detail->find('.product_description')->html();
+        $detailText = $detail->find('.cpt_product_description')->html();
         $brandsTrans = Cutil::translit($brandsDetail, "ru", $arTranslit); //создаем символьный код елемента из имени
+
+        $nameSection = $docDetail->find('.cat_info')->children('a')->get(2)->textContent;
+        $transSect = Cutil::translit($nameSection, "ru", $arTranslit); //создаем символьный код елемента из имени
+        $resSect = CIBlockSection::GetList(false, array("IBLOCK_ID" => "1", "CODE" => $transSect), false, false, array("ID", "NAME", "CODE"))->fetch();
+        if(!$resSect > 0) {
+            $arLoadSect = Array(
+                "MODIFIED_BY" => "1", //айди пользователя для елемента
+                "IBLOCK_SECTION_ID" => $sectionID, //айди раздела
+                "IBLOCK_ID" => "1",
+                "ACTIVE" => "Y",
+                "NAME" => $nameSection,
+                "CODE" => $transSect,
+                "DATE_ACTIVE_FROM" => date('d.m.Y h:m', time())
+            );
+            $sectID = $elSect->Add($arLoadSect);
+        }else{
+            $sectID = $resSect['ID'];
+        }
 
         $PROP[4] = $articule; //артикул товара
         $PROP[1] = array("VALUE" => $brandsTrans); //хайлоадблок с брендами
         //$PROP[6] = array("VALUE" => 15);
         $arLoadProductArray = Array(
             "MODIFIED_BY" => "1", //айди пользователя для елемента
-            "IBLOCK_SECTION_ID" => $sectionID, //айди раздела
+            "IBLOCK_SECTION_ID" => $sectID, //айди раздела
             "IBLOCK_ID" => "1",
             "ACTIVE" => "Y",
             "NAME" => $nameElement,
@@ -156,6 +179,7 @@ if ($_REQUEST['work_start'] && check_bitrix_sessid()) {
             'DETAIL_TEXT_TYPE' => 'html',
             "PREVIEW_PICTURE" => CFile::MakeFileArray($picture['SRC'])//обязательно через мейкфайл иначе будет пусто
         );//создаем массив с данными которые нужно занести в инфоблок
+
 
         if ($PRODUCT_ID = $el->Add($arLoadProductArray)) { //добавляем елемент в инфоблок
             $JSParam[$productNum]['ID'] = $PRODUCT_ID;
@@ -181,12 +205,12 @@ if ($_REQUEST['work_start'] && check_bitrix_sessid()) {
         }
     }
 
-    $p = round(100 - (100 * ($innerLimit / ($pageCount * 20))), 2); //считаем проценты
+    $p = round(100 - (100 * ($innerLimit / ($pageCount * $num))), 2); //считаем проценты
     if ($innerLimit <= 0) {//бывает такое что колличество меньше то скрипт отваливаелся - нужно на всякий случай
         $p = 100;
         $bool = 0;
     }
-    if ($i < $pageCount) { // если текущий I меньше числа страниц то передаем параметры в следующий шаг
+    if ($elLimit > 0) { // если текущий I меньше числа страниц то передаем параметры в следующий шаг
         ?>
         <script>
             SecondStep('<?=$_REQUEST['microtime'] != "" ? $_REQUEST['microtime'] + round(microtime(true) - $start, 2) : round(microtime(true) - $start, 2)?>', <?=$elementCounter?>, <?=$bool?>, <?=$p?>, <?=intval($i + 1)?>, <?=$innerLimit?>, '<hr><?=$p?>, Текущая страница - <?=$i + 1?> из <?=$pageCount?>, Товаров перенесено - <?=$elementCounter?> осталось <?=$innerLimit?>, Всего за: <?=formatPeriod($_REQUEST['microtime'] + microtime(true), $start)?> сек. <hr><br><b>Запись</b> - <?= multi_implode('<br><b>Запись</b> - ', $JSParam)?>');
